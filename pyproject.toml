@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sszb-feedback-skill"
+version = "0.2.0"
+description = "沪深北 Deal Feedback Skill — 抓取并解析三家交易所 IPO / 再融资 / 重大资产重组的审核反馈材料（问询函、回复、招股书/募集说明书/重组报告书），从投行视角输出结构化数据。Extends corylcr/ipo-feedback-skill."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pdfplumber>=0.11",
+    "send2trash>=1.8",
+]
+
+[project.optional-dependencies]
+sse = ["playwright>=1.40"]
+all = ["playwright>=1.40"]
+
+[project.scripts]
+sszb-feedback = "sszb_feedback.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sszb_feedback*"]
