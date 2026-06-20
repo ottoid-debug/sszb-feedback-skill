@@ -32,6 +32,13 @@ class SZSE(ExchangeBase):
     BASE_URL = "https://www.szse.cn"
     API_URL = "/api/ras/infodisc/query"
 
+    # 业务类型到 SZSE bizType 的映射
+    BIZ_TYPE_MAP = {
+        "ipo": "1",            # IPO 招股说明书
+        "refinance": "2",      # 再融资 募集说明书
+        "asset_purchase": "3", # 重大资产重组报告书
+    }
+
     def _build_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update({
@@ -55,19 +62,12 @@ class SZSE(ExchangeBase):
 
     def fetch_projects(self, days: int = 7) -> FeedbackReport:
         """Fetch IPO inquiry replies from the past N days."""
-        if self.business_type != "ipo":
-            import sys
-            print(f"⚠ SZSE {self.business_type} 抓取暂未实现（API 需 reverse engineering）", file=sys.stderr)
-            from datetime import datetime, timedelta
-            cutoff = datetime.now() - timedelta(days=days)
-            date_range = f"{cutoff.strftime('%Y-%m-%d')} ~ {datetime.now().strftime('%Y-%m-%d')}"
-            return FeedbackReport(exchange=self.EXCHANGE, business_type=self.business_type, date_range=date_range, projects=[])
-
         session = self._build_session()
         cutoff = datetime.now() - timedelta(days=days)
         date_range = f"{cutoff.strftime('%Y-%m-%d')} ~ {datetime.now().strftime('%Y-%m-%d')}"
         import sys
-        print(f"📋 Fetching SZSE feedback since {cutoff.strftime('%Y-%m-%d')}...", file=sys.stderr)
+        biz_label = {"ipo": "IPO", "refinance": "再融资", "asset_purchase": "重大资产重组"}.get(self.business_type, self.business_type)
+        print(f"📋 Fetching SZSE {biz_label} since {cutoff.strftime('%Y-%m-%d')}...", file=sys.stderr)
 
         projects_map = {}
         page = 0
@@ -82,7 +82,7 @@ class SZSE(ExchangeBase):
                     "disclosedStartDate": cutoff.strftime("%Y-%m-%d"),
                     "disclosedEndDate": datetime.now().strftime("%Y-%m-%d"),
                     "catalog": "",  # Fetch all types
-                    "bizType": "1",
+                    "bizType": self.BIZ_TYPE_MAP.get(self.business_type, "1"),
                     "boardCode": "",
                 },
             )
@@ -95,6 +95,7 @@ class SZSE(ExchangeBase):
                     projects_map[company] = ProjectFeedback(
                         company_name=company,
                         stock_code=proj.get("cmpcode", ""),
+                        business_type=self.business_type,
                     )
 
                 fp = projects_map[company]
@@ -106,17 +107,29 @@ class SZSE(ExchangeBase):
                     if not dfpth:
                         continue
 
-                    # dtyp=4 → inquiry reply, dtyp=3+matcat=3 → registration draft
-                    if dtyp == 4 and fp.reply is None:
+                    # dtyp=4 → inquiry reply
+                    # dtyp=3 (matcat=3) → registration draft / 招股书 / 募集说明书 / 重组报告书
+                    # 同时按文件名兜底识别（兼容再融资/重组的子文档结构）
+                    name_lower = dfnm.lower()
+                    is_inquiry = "问询函" in dfnm and "回复" not in dfnm
+                    is_reply = ("问询" in dfnm and "回复" in dfnm) or dtyp == 4
+                    is_prospectus = (
+                        "招股说明书" in dfnm or "募集说明书" in dfnm or "重组报告书" in dfnm
+                        or (dtyp == 3 and matcat == 3)
+                    )
+
+                    if is_inquiry and fp.inquiry is None:
+                        fp.inquiry = self._make_doc(doc, company, proj.get("ddt", ""), "inquiry")
+                    elif is_reply and fp.reply is None:
                         fp.reply = self._make_doc(doc, company, proj.get("ddt", ""), "reply")
-                    elif dtyp == 3 and matcat == 3 and fp.prospectus is None:
+                    elif is_prospectus and fp.prospectus is None:
                         fp.prospectus = self._make_doc(doc, company, proj.get("ddt", ""), "prospectus")
 
             if page + 1 >= data.get("totalPage", 1):
                 break
             page += 1
 
-        all_projects = [p for p in projects_map.values() if p.reply or p.prospectus]
+        all_projects = [p for p in projects_map.values() if p.inquiry or p.reply or p.prospectus]
         print(f"✅ Found {len(all_projects)} projects with feedback", file=sys.stderr)
         return FeedbackReport(exchange=self.EXCHANGE, business_type=self.business_type, date_range=date_range, projects=all_projects)
 
@@ -136,6 +149,7 @@ class SZSE(ExchangeBase):
             company_name=company,
             stock_code=code,
             doc_type=doc_type,
+            business_type=self.business_type,
             title=dfnm.replace(".pdf", ""),
             publish_date=pub_date,
             pdf_url=pdf_url,
